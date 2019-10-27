@@ -434,41 +434,4 @@ function activate_virtualenv() {
     . $env_dir/bin/activate
 }
 
-# use pip cache if possible but do not store it outside of the source
-# tree
-# see https://pip.pypa.io/en/stable/reference/pip_install.html#caching
-mkdir -p install-deps-cache
-top_srcdir=$(pwd)
-export XDG_CACHE_HOME=$top_srcdir/install-deps-cache
-wip_wheelhouse=wheelhouse-wip
-
-#
-# preload python modules so that tox can run without network access
-#
-find . -name tox.ini | while read ini ; do
-    (
-        cd $(dirname $ini)
-        require=$(ls *requirements.txt 2>/dev/null | sed -e 's/^/-r /')
-        md5=wheelhouse/md5
-        if test "$require"; then
-            if ! test -f $md5 || ! md5sum -c $md5 ; then
-                rm -rf wheelhouse
-            fi
-        fi
-        if test "$require" && ! test -d wheelhouse ; then
-            for interpreter in python2.7 python3 ; do
-                type $interpreter > /dev/null 2>&1 || continue
-                activate_virtualenv $top_srcdir $interpreter || exit 1
-                populate_wheelhouse "wheel -w $wip_wheelhouse" $require || exit 1
-            done
-            mv $wip_wheelhouse wheelhouse
-            md5sum *requirements.txt > $md5
-        fi
-    )
-done
-
-for interpreter in python2.7 python3 ; do
-    rm -rf $top_srcdir/install-deps-$interpreter
-done
-rm -rf $XDG_CACHE_HOME
 git --version || (echo "Dashboard uses git to pull dependencies." ; false)
