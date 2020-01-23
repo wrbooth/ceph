@@ -15,9 +15,11 @@
 
 #include <errno.h>
 #include "ceph_ver.h"
+#include "include/types.h"
 #include "common/Formatter.h"
 #include "common/ceph_argparse.h"
 #include "common/errno.h"
+#include "denc_registry.h"
 
 #define MB(m) ((m) * 1024 * 1024)
 
