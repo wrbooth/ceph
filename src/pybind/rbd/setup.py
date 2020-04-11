@@ -22,8 +22,21 @@ def filter_unsupported_flags(flags):
     else:
         return flags
 
+def fix_arm32_flags(flags):
+    flags.extend(['-D_GLIBCXX_USE_CXX11_ABI=0', '--sysroot=/sysroot', '-march=armv7-a', '-mfpu=vfpv3-d16',  '-mfloat-abi=hard'])
+    return [f for f in flags if not (f == '-m64' or 
+                                     f == '-mtune=generic')]
+    
+def fix_arm32_link_flags(flags):
+    flags.extend(['--sysroot=/sysroot', '-Wl,-rpath,/build/build/lib'])
+    return flags
+
 def monkey_with_compiler(compiler):
     unwrapped_customize(compiler)
+    compiler.compiler = fix_arm32_flags(compiler.compiler)
+    compiler.compiler_so = fix_arm32_flags(compiler.compiler_so)
+    compiler.linker_exe = fix_arm32_link_flags(compiler.linker_exe)
+    compiler.linker_so = fix_arm32_link_flags(compiler.linker_so)
     if compiler.compiler_type == 'unix':
         if compiler.compiler[0].find('clang') != -1:
             global clang
@@ -58,15 +71,13 @@ def get_python_flags():
 
     python_config = python + '-config'
 
-    for cflag in filter_unsupported_flags(subprocess.check_output(
-            [python_config, "--cflags"]).strip().decode('utf-8').split()):
+    for cflag in filter_unsupported_flags("-I/sysroot/usr/include/python2.7 --sysroot=/sysroot -fno-strict-aliasing -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -DNDEBUG -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -D_GLIBCXX_USE_CXX11_ABI=0".strip().decode('utf-8').split()):
         if cflag.startswith('-I'):
             cflags['I'].append(cflag.replace('-I', ''))
         else:
             cflags['extras'].append(cflag)
 
-    for ldflag in filter_unsupported_flags(subprocess.check_output(
-            [python_config, "--ldflags"]).strip().decode('utf-8').split()):
+    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -Wl,-rpath,/build/build/lib -L/sysroot/lib".strip().decode('utf-8').split()):
         if ldflag.startswith('-l'):
             ldflags['l'].append(ldflag.replace('-l', ''))
         if ldflag.startswith('-L'):
@@ -177,6 +188,8 @@ if (len(sys.argv) >= 2 and
         return x
 
 flags = get_python_flags()
+
+print(flags['ldflags'])
 
 setup(
     name='rbd',

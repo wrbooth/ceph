@@ -14,6 +14,8 @@ function(build_rocksdb)
     list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
   endif()
 
+  list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=/build/toolchain.sysroot)
+
   list(APPEND rocksdb_CMAKE_ARGS -DWITH_SNAPPY=${SNAPPY_FOUND})
   if(SNAPPY_FOUND)
     list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES snappy::snappy)
