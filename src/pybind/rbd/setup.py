@@ -28,7 +28,7 @@ def fix_arm32_flags(flags):
                                      f == '-mtune=generic')]
     
 def fix_arm32_link_flags(flags):
-    flags.extend(['--sysroot=/sysroot', '-Wl,-rpath,/build/build/lib'])
+    flags.extend(['--sysroot=/sysroot', '-Wl,-rpath,/root/rpmbuild/BUILD/ceph/build/lib'])
     return flags
 
 def monkey_with_compiler(compiler):
@@ -77,7 +77,7 @@ def get_python_flags():
         else:
             cflags['extras'].append(cflag)
 
-    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -Wl,-rpath,/build/build/lib -L/sysroot/lib".strip().decode('utf-8').split()):
+    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -Wl,-rpath,/root/rpmbuild/BUILD/ceph/build/lib -L/sysroot/lib".strip().decode('utf-8').split()):
         if ldflag.startswith('-l'):
             ldflags['l'].append(ldflag.replace('-l', ''))
         if ldflag.startswith('-L'):
