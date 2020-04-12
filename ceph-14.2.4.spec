@@ -29,7 +29,7 @@
 %endif
 %if 0%{?fedora} || 0%{?rhel}
 %bcond_with selinux
-%bcond_without ceph_test_package
+%bcond_with ceph_test_package
 %bcond_with cephfs_java
 %bcond_without lttng
 %bcond_without libradosstriper
@@ -711,6 +711,7 @@ This package contains Python 2 libraries for interacting with Cephs RADOS
 gateway.
 %endif
 
+%if 0%{without python2}
 %package -n python%{python3_pkgversion}-rgw
 Summary:	Python 3 libraries for the RADOS gateway
 %if 0%{?suse_version}
@@ -726,6 +727,7 @@ Obsoletes:	python-rgw < %{_epoch_prefix}%{version}-%{release}
 %description -n python%{python3_pkgversion}-rgw
 This package contains Python 3 libraries for interacting with Cephs RADOS
 gateway.
+%endif
 
 %if 0%{with python2}
 %package -n python-rados
@@ -740,6 +742,7 @@ This package contains Python 2 libraries for interacting with Cephs RADOS
 object store.
 %endif
 
+%if 0%{without python2}
 %package -n python%{python3_pkgversion}-rados
 Summary:	Python 3 libraries for the RADOS object store
 %if 0%{?suse_version}
@@ -755,6 +758,7 @@ Obsoletes:      python-rados < %{_epoch_prefix}%{version}-%{release}
 %description -n python%{python3_pkgversion}-rados
 This package contains Python 3 libraries for interacting with Cephs RADOS
 object store.
+%endif
 
 %if 0%{with libradosstriper}
 %package -n libradosstriper1
@@ -831,6 +835,7 @@ This package contains Python 2 libraries for interacting with Cephs RADOS
 block device.
 %endif
 
+%if 0%{without python2}
 %package -n python%{python3_pkgversion}-rbd
 Summary:	Python 3 libraries for the RADOS block device
 %if 0%{?suse_version}
@@ -846,6 +851,7 @@ Obsoletes:	python-rbd < %{_epoch_prefix}%{version}-%{release}
 %description -n python%{python3_pkgversion}-rbd
 This package contains Python 3 libraries for interacting with Cephs RADOS
 block device.
+%endif
 
 %package -n libcephfs2
 Summary:	Ceph distributed file system client library
@@ -892,6 +898,7 @@ This package contains Python 2 libraries for interacting with Cephs distributed
 file system.
 %endif
 
+%if 0%{without python2}
 %package -n python%{python3_pkgversion}-cephfs
 Summary:	Python 3 libraries for Ceph distributed file system
 %if 0%{?suse_version}
@@ -908,6 +915,7 @@ Obsoletes:	python-cephfs < %{_epoch_prefix}%{version}-%{release}
 %description -n python%{python3_pkgversion}-cephfs
 This package contains Python 3 libraries for interacting with Cephs distributed
 file system.
+%endif
 
 %if 0%{with python2}
 %package -n python-ceph-argparse
@@ -922,6 +930,7 @@ command-description information, validating user command input against those
 descriptions, and submitting the command to the appropriate daemon.
 %endif
 
+%if 0%{without python2}
 %package -n python%{python3_pkgversion}-ceph-argparse
 Summary:	Python 3 utility libraries for Ceph CLI
 %if 0%{?suse_version}
@@ -933,6 +942,7 @@ This package contains types and routines for Python 3 used by the Ceph CLI as
 well as the RESTful interface. These have to do with querying the daemons for
 command-description information, validating user command input against those
 descriptions, and submitting the command to the appropriate daemon.
+%endif
 
 %if 0%{with cephfs_shell}
 %package -n cephfs-shell
@@ -1076,6 +1086,7 @@ This package provides Ceph’s default alerts for Prometheus.
 #################################################################################
 %prep
 git clone --recursive --single-branch --branch arm32_cross_compile https://github.com/wrbooth/ceph.git %{_builddir}/ceph-%{version}
+ln -sf %{_builddir}/ceph-%{version} %{_builddir}/ceph
 
 %build
 cd %{_builddir}/ceph-%{version}
@@ -1106,7 +1117,7 @@ RPM_OPT_FLAGS="$RPM_OPT_FLAGS --param ggc-min-expand=20 --param ggc-min-heapsize
 # export LDFLAGS="$RPM_LD_FLAGS"
 
 # Parallel build settings ...
-CEPH_MFLAGS_JOBS="%{?_smp_mflags}"
+CEPH_MFLAGS_JOBS=8
 CEPH_SMP_NCPUS=$(echo "$CEPH_MFLAGS_JOBS" | sed 's/-j//')
 %if 0%{?__isa_bits} == 32
 # 32-bit builds can use 3G memory max, which is not enough even for -j2
@@ -1125,7 +1136,7 @@ if test -n "$CEPH_SMP_NCPUS" -a "$CEPH_SMP_NCPUS" -gt 1 ; then
     test "$CEPH_SMP_NCPUS" -le 0 && CEPH_SMP_NCPUS="1" && echo "Warning: Not using parallel build at all because of memory limits"
 fi
 export CEPH_SMP_NCPUS
-export CEPH_MFLAGS_JOBS="-j$CEPH_SMP_NCPUS"
+export CEPH_MFLAGS_JOBS="-j8"
 
 env | sort
 
@@ -1191,7 +1202,7 @@ ${CMAKE} .. \
 %else
     -DWITH_RADOSGW_AMQP_ENDPOINT=OFF \
 %endif
-    -DBOOST_J=$CEPH_SMP_NCPUS \
+    -DBOOST_J=8 \
     -DWITH_GRAFANA=ON \
     -DCMAKE_TOOLCHAIN_FILE=../toolchain.sysroot
 
@@ -1207,6 +1218,7 @@ ctest "$CEPH_MFLAGS_JOBS"
 
 
 %install
+cd %{_builddir}/ceph-%{version}
 pushd build
 make DESTDIR=%{buildroot} install
 # we have dropped sysvinit bits
@@ -1268,6 +1280,9 @@ install -m 644 -D monitoring/prometheus/alerts/ceph_default_alerts.yml %{buildro
 %py_byte_compile %{__python3} %{buildroot}%{python3_sitelib}
 %endif
 
+rsync -a %{buildroot}/usr/lib64/ %{buildroot}/usr/lib/
+rm -rf %{buildroot}/usr/lib64
+
 %clean
 rm -rf %{buildroot}
 
@@ -1310,9 +1325,9 @@ rm -rf %{buildroot}
 %endif
 %{_unitdir}/ceph.target
 %if 0%{with python2}
-%dir %{python_sitelib}/ceph_volume
-%{python_sitelib}/ceph_volume/*
-%{python_sitelib}/ceph_volume-*
+%dir %{_libdir}/python2.7/site-packages/ceph_volume
+%{_libdir}/python2.7/site-packages/ceph_volume/*
+%{_libdir}/python2.7/site-packages/ceph_volume-*
 %else
 %dir %{python3_sitelib}/ceph_volume
 %{python3_sitelib}/ceph_volume/*
@@ -1934,13 +1949,15 @@ fi
 
 %if 0%{with python2}
 %files -n python-rados
-%{python_sitearch}/rados.so
-%{python_sitearch}/rados-*.egg-info
+%{_libdir}/python2.7/site-packages/rados.so
+%{_libdir}/python2.7/site-packages/rados-*.egg-info
 %endif
 
+%if 0%{without python2}
 %files -n python%{python3_pkgversion}-rados
 %{python3_sitearch}/rados.cpython*.so
 %{python3_sitearch}/rados-*.egg-info
+%endif
 
 %if 0%{with libradosstriper}
 %files -n libradosstriper1
@@ -1999,23 +2016,27 @@ fi
 
 %if 0%{with python2}
 %files -n python-rgw
-%{python_sitearch}/rgw.so
-%{python_sitearch}/rgw-*.egg-info
+%{_libdir}/python2.7/site-packages/rgw.so
+%{_libdir}/python2.7/site-packages/rgw-*.egg-info
 %endif
 
+%if 0%{without python2}
 %files -n python%{python3_pkgversion}-rgw
 %{python3_sitearch}/rgw.cpython*.so
 %{python3_sitearch}/rgw-*.egg-info
+%endif
 
 %if 0%{with python2}
 %files -n python-rbd
-%{python_sitearch}/rbd.so
-%{python_sitearch}/rbd-*.egg-info
+%{_libdir}/python2.7/site-packages/rbd.so
+%{_libdir}/python2.7/site-packages/rbd-*.egg-info
 %endif
 
+%if 0%{without python2}
 %files -n python%{python3_pkgversion}-rbd
 %{python3_sitearch}/rbd.cpython*.so
 %{python3_sitearch}/rbd-*.egg-info
+%endif
 
 %files -n libcephfs2
 %{_libdir}/libcephfs.so.*
@@ -2032,28 +2053,32 @@ fi
 
 %if 0%{with python2}
 %files -n python-cephfs
-%{python_sitearch}/cephfs.so
-%{python_sitearch}/cephfs-*.egg-info
-%{python_sitelib}/ceph_volume_client.py*
+%{_libdir}/python2.7/site-packages/cephfs.so
+%{_libdir}/python2.7/site-packages/cephfs-*.egg-info
+%{_libdir}/python2.7/site-packages/ceph_volume_client.py*
 %endif
 
+%if 0%{without python2}
 %files -n python%{python3_pkgversion}-cephfs
 %{python3_sitearch}/cephfs.cpython*.so
 %{python3_sitearch}/cephfs-*.egg-info
 %{python3_sitelib}/ceph_volume_client.py
 %{python3_sitelib}/__pycache__/ceph_volume_client.cpython*.py*
+%endif
 
 %if 0%{with python2}
 %files -n python-ceph-argparse
-%{python_sitelib}/ceph_argparse.py*
-%{python_sitelib}/ceph_daemon.py*
+%{_libdir}/python2.7/site-packages/ceph_argparse.py*
+%{_libdir}/python2.7/site-packages/ceph_daemon.py*
 %endif
 
+%if 0%{without python2}
 %files -n python%{python3_pkgversion}-ceph-argparse
 %{python3_sitelib}/ceph_argparse.py
 %{python3_sitelib}/__pycache__/ceph_argparse.cpython*.py*
 %{python3_sitelib}/ceph_daemon.py
 %{python3_sitelib}/__pycache__/ceph_daemon.cpython*.py*
+%endif
 
 %if 0%{with cephfs_shell}
 %files -n cephfs-shell
@@ -2212,8 +2237,8 @@ exit 0
 %attr(0755,root,root) %dir %{_sysconfdir}/grafana/dashboards/ceph-dashboard
 %endif
 %config %{_sysconfdir}/grafana/dashboards/ceph-dashboard/*
-%doc monitoring/grafana/dashboards/README
-%doc monitoring/grafana/README.md
+# %doc monitoring/grafana/dashboards/README
+# %doc monitoring/grafana/README.md
 
 %if 0%{?suse_version}
 %files prometheus-alerts
