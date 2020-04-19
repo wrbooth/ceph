@@ -64,7 +64,6 @@ function(do_build_boost version)
   endif()
   set(BOOST_CXXFLAGS "-fPIC -w") # check on arm, etc <---XXX
   list(APPEND boost_features "cxxflags=${BOOST_CXXFLAGS}")
-  list(APPEND boost_features "define=_GLIBCXX_USE_CXX11_ABI=0")
 
   set(boost_with_libs)
   foreach(c ${Boost_BUILD_COMPONENTS})

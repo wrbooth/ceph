@@ -14,7 +14,7 @@ function(build_rocksdb)
     list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
   endif()
 
-  list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=/root/rpmbuild/BUILD/ceph/toolchain.sysroot)
+  list(APPEND rocksdb_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=/build/ceph/toolchain-ubuntu.sysroot)
 
   list(APPEND rocksdb_CMAKE_ARGS -DWITH_SNAPPY=${SNAPPY_FOUND})
   if(SNAPPY_FOUND)

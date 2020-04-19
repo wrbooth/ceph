@@ -9,7 +9,10 @@ import tempfile
 import textwrap
 from distutils.ccompiler import new_compiler
 from distutils.errors import CompileError, LinkError
+import distutils.log
 import distutils.sysconfig
+
+distutils.log.set_verbosity(distutils.log.DEBUG)
 
 unwrapped_customize = distutils.sysconfig.customize_compiler
 
@@ -22,12 +25,12 @@ def filter_unsupported_flags(flags):
     return flags
 
 def fix_arm32_flags(flags):
-    flags.extend(['-D_GLIBCXX_USE_CXX11_ABI=0', '--sysroot=/sysroot', '-march=armv7-a', '-mfpu=vfpv3-d16',  '-mfloat-abi=hard'])
+    flags.extend(['--sysroot=/sysroot', '-march=armv7-a', '-mfpu=vfpv3-d16',  '-mfloat-abi=hard'])
     return [f for f in flags if not (f == '-m64' or 
                                      f == '-mtune=generic')]
     
 def fix_arm32_link_flags(flags):
-    flags.extend(['--sysroot=/sysroot', '-Wl,-rpath,/root/rpmbuild/BUILD/ceph/build/lib'])
+    flags.extend(['--sysroot=/sysroot'])
     return flags
 
 def monkey_with_compiler(compiler):
@@ -47,6 +50,10 @@ def monkey_with_compiler(compiler):
 # See what you made me do?
 
 distutils.sysconfig.customize_compiler = monkey_with_compiler
+
+# oh god the horror!!!!
+shutil.copyfile(os.path.join(os.environ.get('CEPH_LIBDIR'), 'libceph-common.so.0'),
+                '/sysroot/lib/libceph-common.so.0')
 
 import distutils.core
 
@@ -73,13 +80,13 @@ def get_python_flags():
 
     python_config = python + '-config'
 
-    for cflag in filter_unsupported_flags("-I/sysroot/usr/include/python2.7 --sysroot=/sysroot -fno-strict-aliasing -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -DNDEBUG -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -D_GLIBCXX_USE_CXX11_ABI=0".strip().decode('utf-8').split()):
+    for cflag in filter_unsupported_flags("-I/sysroot/usr/include/python2.7 --sysroot=/sysroot -fno-strict-aliasing -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -DNDEBUG -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv".strip().decode('utf-8').split()):
         if cflag.startswith('-I'):
             cflags['I'].append(cflag.replace('-I', ''))
         else:
             cflags['extras'].append(cflag)
 
-    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -Wl,-rpath,/root/rpmbuild/BUILD/ceph/build/lib -L/sysroot/lib".strip().decode('utf-8').split()):
+    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -L/sysroot/lib".strip().decode('utf-8').split()):
         if ldflag.startswith('-l'):
             ldflags['l'].append(ldflag.replace('-l', ''))
         if ldflag.startswith('-L'):
