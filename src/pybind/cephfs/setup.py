@@ -48,8 +48,9 @@ def monkey_with_compiler(compiler):
 distutils.sysconfig.customize_compiler = monkey_with_compiler
 
 # oh god the horror!!!!
-shutil.copyfile(os.path.join(os.environ.get('CEPH_LIBDIR'), 'libceph-common.so.0'),
-                '/sysroot/lib/libceph-common.so.0')
+if not os.path.exists('/sysroot/lib/libceph-common.so.0'):
+    shutil.copyfile(os.path.join(os.environ.get('CEPH_LIBDIR'), 'libceph-common.so.0'),
+                    '/sysroot/lib/libceph-common.so.0')
 
 if not pkgutil.find_loader('setuptools'):
     from distutils.core import setup
@@ -75,13 +76,13 @@ def get_python_flags():
 
     python_config = python + '-config'
 
-    for cflag in filter_unsupported_flags("-I/sysroot/usr/include/python2.7 --sysroot=/sysroot -fno-strict-aliasing -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -DNDEBUG -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv".strip().decode('utf-8').split()):
+    for cflag in filter_unsupported_flags("-I/sysroot/usr/include/python2.7 --sysroot=/sysroot -fno-strict-aliasing -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv -DNDEBUG -O2 -g -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector-strong --param=ssp-buffer-size=4 -grecord-gcc-switches -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D_GNU_SOURCE -fPIC -fwrapv".strip().split()):
         if cflag.startswith('-I'):
             cflags['I'].append(cflag.replace('-I', ''))
         else:
             cflags['extras'].append(cflag)
 
-    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -L/sysroot/lib".strip().decode('utf-8').split()):
+    for ldflag in filter_unsupported_flags("--sysroot=/sysroot -Xlinker -export-dynamic -L/sysroot/lib".strip().split()):
         if ldflag.startswith('-l'):
             ldflags['l'].append(ldflag.replace('-l', ''))
         if ldflag.startswith('-L'):
