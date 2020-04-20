@@ -17,13 +17,14 @@ extraopts += -DWITH_PYTHON3=ON -DWITH_MGR_DASHBOARD_FRONTEND=OFF
 # extraopts += -DWITH_CEPHFS_JAVA=ON
 extraopts += -DWITH_CEPHFS_SHELL=ON
 extraopts += -DWITH_SYSTEMD=ON -DCEPH_SYSTEMD_ENV_DIR=/etc/default
-extraopts += -DWITH_GRAFANA=ON
-extraopts += -DWITH_TESTS=OFF
+# extraopts += -DWITH_GRAFANA=ON
+# extraopts += -DWITH_TESTS=OFF
 # assumes that ceph is exmpt from multiarch support, so we override the libdir.
 extraopts += -DCMAKE_INSTALL_LIBDIR=/usr/lib
 extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib
 extraopts += -DCMAKE_INSTALL_SYSCONFDIR=/etc
 extraopts += -DCMAKE_INSTALL_SYSTEMD_SERVICEDIR=/lib/systemd/system
+extraopts += -DCMAKE_TOOLCHAIN_FILE=/build/ceph/toolchain-ubuntu.sysroot
 ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
   NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
   extraopts += -DBOOST_J=$(NUMJOBS)
@@ -35,9 +36,11 @@ ifneq (,$(filter $(DEB_HOST_ARCH), arm armel armhf arm64 i386 amd64 mips mipsel 
 else
   extraopts += -DWITH_BOOST_CONTEXT=OFF
 endif
+extraopts += -DCMAKE_C_COMPILER=/usr/bin/arm-linux-gnueabihf-gcc
+extraopts += -DCMAKE_CXX_COMPILER=/usr/bin/arm-linux-gnueabihf-g++
 
 %:
-	dh $@ --buildsystem=cmake --with javahelper,python2,python3,systemd --parallel
+	dh $@ --buildsystem=cmake --with python2,python3,systemd --parallel
 
 override_dh_auto_configure:
 	env | sort
@@ -117,7 +120,7 @@ override_dh_strip:
 	dh_strip -ppython3-cephfs --dbg-package=python3-cephfs-dbg
 
 override_dh_shlibdeps:
-	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor
+	dh_shlibdeps -a --exclude=erasure-code --exclude=rados-classes --exclude=compressor -- -l/sysroot/lib -l/sysroot/usr/lib -l/usr/arm-linux-gnueabihf/lib -l/sysroot/lib/arm-linux-gnueabihf -l/sysroot/usr/lib/arm-linux-gnueabihf --ignore-missing-info
 
 override_dh_python2:
 	for binding in rados cephfs rbd rgw; do \
