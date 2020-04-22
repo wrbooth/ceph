@@ -557,7 +557,10 @@ Conflicts: librados
 Replaces: librados
 Architecture: linux-any
 Section: libs
-Depends: ${misc:Depends},
+Depends: libnss3,
+         libibverbs1,
+         librdmacm1,
+         ${misc:Depends},
          ${shlibs:Depends},
 Description: RADOS distributed object store client library
  RADOS is a reliable, autonomic distributed object storage cluster
