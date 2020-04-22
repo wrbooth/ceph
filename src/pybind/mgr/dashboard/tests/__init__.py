@@ -17,6 +17,13 @@ from ..controllers import json_error_page, generate_controller_routes
 from ..services.auth import AuthManagerTool
 from ..services.exception import dashboard_exception_handler
 
+from ..plugins import PLUGIN_MANAGER
+from ..plugins import feature_toggles, debug  # noqa # pylint: disable=unused-import
+
+
+PLUGIN_MANAGER.hook.init()
+PLUGIN_MANAGER.hook.register_commands()
+
 
 class CmdException(Exception):
     def __init__(self, retcode, message):
@@ -78,6 +85,8 @@ class CLICommandTestMixin(KVStoreMockMixin):
 
 
 class ControllerTestCase(helper.CPWebCase):
+    _endpoints_cache = {}
+
     @classmethod
     def setup_controllers(cls, ctrl_classes, base_url=''):
         if not isinstance(ctrl_classes, list):
@@ -86,7 +95,17 @@ class ControllerTestCase(helper.CPWebCase):
         endpoint_list = []
         for ctrl in ctrl_classes:
             inst = ctrl()
-            for endpoint in ctrl.endpoints():
+
+            # We need to cache the controller endpoints because
+            # BaseController#endpoints method is not idempontent
+            # and a controller might be needed by more than one
+            # unit test.
+            if ctrl not in cls._endpoints_cache:
+                ctrl_endpoints = ctrl.endpoints()
+                cls._endpoints_cache[ctrl] = ctrl_endpoints
+
+            ctrl_endpoints = cls._endpoints_cache[ctrl]
+            for endpoint in ctrl_endpoints:
                 endpoint.inst = inst
                 endpoint_list.append(endpoint)
         endpoint_list = sorted(endpoint_list, key=lambda e: e.url)
@@ -106,9 +125,10 @@ class ControllerTestCase(helper.CPWebCase):
             'tools.json_in.on': True,
             'tools.json_in.force': False
         })
+        PLUGIN_MANAGER.hook.configure_cherrypy(config=cherrypy.config)
         super(ControllerTestCase, self).__init__(*args, **kwargs)
 
-    def _request(self, url, method, data=None):
+    def _request(self, url, method, data=None, headers=None):
         if not data:
             b = None
             h = None
@@ -116,10 +136,12 @@ class ControllerTestCase(helper.CPWebCase):
             b = json.dumps(data)
             h = [('Content-Type', 'application/json'),
                  ('Content-Length', str(len(b)))]
+        if headers:
+            h = headers
         self.getPage(url, method=method, body=b, headers=h)
 
-    def _get(self, url):
-        self._request(url, 'GET')
+    def _get(self, url, headers=None):
+        self._request(url, 'GET', headers=headers)
 
     def _post(self, url, data=None):
         self._request(url, 'POST', data)

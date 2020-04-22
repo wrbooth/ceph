@@ -182,6 +182,7 @@ namespace librbd {
     uint64_t readahead_disable_after_bytes;
     bool clone_copy_on_read;
     bool enable_alloc_hint;
+    uint32_t alloc_hint_flags = 0U;
     uint32_t discard_granularity_bytes = 0;
     bool blkin_trace_all;
     uint64_t mirroring_replay_delay;
@@ -223,7 +224,7 @@ namespace librbd {
     ~ImageCtx();
     void init();
     void shutdown();
-    void init_layout();
+    void init_layout(int64_t pool_id);
     void perf_start(std::string name);
     void perf_stop();
     void set_read_flag(unsigned flag);

@@ -199,6 +199,22 @@ PyObject *ActivePyModules::get_python(const std::string &what)
       }
     });
     return f.get();
+  } else if (what == "modified_config_options") {
+    PyEval_RestoreThread(tstate);
+    auto all_daemons = daemon_state.get_all();
+    set<string> names;
+    for (auto& [key, daemon] : all_daemons) {
+      std::lock_guard l(daemon->lock);
+      for (auto& [name, valmap] : daemon->config) {
+	names.insert(name);
+      }
+    }
+    f.open_array_section("options");
+    for (auto& name : names) {
+      f.dump_string("name", name);
+    }
+    f.close_section();
+    return f.get();
   } else if (what.substr(0, 6) == "config") {
     PyEval_RestoreThread(tstate);
     if (what == "config_options") {
@@ -314,10 +330,15 @@ PyObject *ActivePyModules::get_python(const std::string &what)
   } else if (what.size() > 7 &&
 	     what.substr(0, 7) == "device ") {
     string devid = what.substr(7);
-    daemon_state.with_device(devid, [&f, &tstate] (const DeviceState& dev) {
-        PyEval_RestoreThread(tstate);
-	f.dump_object("device", dev);
-      });
+    if (!daemon_state.with_device(
+	  devid,
+	  [&f, &tstate] (const DeviceState& dev) {
+	    PyEval_RestoreThread(tstate);
+	    f.dump_object("device", dev);
+	  })) {
+      // device not found
+      PyEval_RestoreThread(tstate);
+    }
     return f.get();
   } else if (what == "io_rate") {
     cluster_state.with_pgmap(
@@ -341,7 +362,7 @@ PyObject *ActivePyModules::get_python(const std::string &what)
     cluster_state.with_pgmap(
         [&f, &tstate](const PGMap &pg_map) {
       PyEval_RestoreThread(tstate);
-      pg_map.dump_osd_stats(&f);
+      pg_map.dump_osd_stats(&f, false);
     });
     return f.get();
   } else if (what == "osd_pool_stats") {
@@ -904,22 +925,24 @@ void ActivePyModules::set_health_checks(const std::string& module_name,
 }
 
 int ActivePyModules::handle_command(
-  std::string const &module_name,
+  const ModuleCommand& module_command,
+  const MgrSession& session,
   const cmdmap_t &cmdmap,
   const bufferlist &inbuf,
   std::stringstream *ds,
   std::stringstream *ss)
 {
-  lock.Lock();
-  auto mod_iter = modules.find(module_name);
+  lock.lock();
+  auto mod_iter = modules.find(module_command.module_name);
   if (mod_iter == modules.end()) {
-    *ss << "Module '" << module_name << "' is not available";
-    lock.Unlock();
+    *ss << "Module '" << module_command.module_name << "' is not available";
+    lock.unlock();
     return -ENOENT;
   }
 
-  lock.Unlock();
-  return mod_iter->second->handle_command(cmdmap, inbuf, ds, ss);
+  lock.unlock();
+  return mod_iter->second->handle_command(module_command, session, cmdmap,
+                                          inbuf, ds, ss);
 }
 
 void ActivePyModules::get_health_checks(health_check_map_t *checks)

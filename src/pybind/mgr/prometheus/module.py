@@ -317,7 +317,8 @@ class Module(MgrModule):
         metrics['pg_total'] = Metric(
             'gauge',
             'pg_total',
-            'PG Total Count'
+            'PG Total Count per Pool',
+            ('pool_id',)
         )
 
         metrics['scrape_duration_seconds'] = Metric(
@@ -362,7 +363,8 @@ class Module(MgrModule):
             metrics[path] = Metric(
                 'gauge',
                 path,
-                'PG {}'.format(state),
+                'PG {} per pool'.format(state),
+                ('pool_id',)
             )
         for state in DF_CLUSTER:
             path = 'cluster_{}'.format(state)
@@ -472,6 +474,7 @@ class Module(MgrModule):
 
         all_modules = {module.get('name'):module.get('can_run') for module in mgr_map['available_modules']}
 
+        ceph_release = None
         for mgr in all_mgrs:
             host_version = servers.get((mgr, 'mgr'), ('', ''))
             if mgr == active:
@@ -487,7 +490,7 @@ class Module(MgrModule):
             self.metrics['mgr_status'].set(_state, (
                 'mgr.{}'.format(mgr), 
             ))
-        always_on_modules = mgr_map['always_on_modules'][ceph_release]
+        always_on_modules = mgr_map['always_on_modules'].get(ceph_release, [])
         active_modules = list(always_on_modules)
         active_modules.extend(mgr_map['modules'])
 
@@ -505,32 +508,34 @@ class Module(MgrModule):
             self.metrics['mgr_module_can_run'].set(_can_run, (mod_name,))
 
     def get_pg_status(self):
-        # TODO add per pool status?
-        pg_status = self.get('pg_status')
 
-        # Set total count of PGs, first
-        self.metrics['pg_total'].set(pg_status['num_pgs'])
+        pg_summary = self.get('pg_summary')
 
-        reported_states = {}
-        for pg in pg_status['pgs_by_state']:
-            for state in pg['state_name'].split('+'):
-                reported_states[state] = reported_states.get(
-                    state, 0) + pg['count']
+        for pool in pg_summary['by_pool']:
+            total = 0
+            for state_name, count in pg_summary['by_pool'][pool].items():
+                reported_states = {}
 
-        for state in reported_states:
-            path = 'pg_{}'.format(state)
-            try:
-                self.metrics[path].set(reported_states[state])
-            except KeyError:
-                self.log.warn("skipping pg in unknown state {}".format(state))
+                for state in state_name.split('+'):
+                    reported_states[state] = reported_states.get(
+                        state, 0) + count
 
-        for state in PG_STATES:
-            if state not in reported_states:
-                try:
-                    self.metrics['pg_{}'.format(state)].set(0)
-                except KeyError:
-                    self.log.warn(
-                        "skipping pg in unknown state {}".format(state))
+                for state in reported_states:
+                    path = 'pg_{}'.format(state)
+                    try:
+                        self.metrics[path].set(reported_states[state],(pool,))
+                    except KeyError:
+                        self.log.warn("skipping pg in unknown state {}".format(state))
+
+                for state in PG_STATES:
+                    if state not in reported_states:
+                        try:
+                            self.metrics['pg_{}'.format(state)].set(0,(pool,))
+                        except KeyError:
+                            self.log.warn(
+                                "skipping pg in unknown state {}".format(state))
+                total = total + count
+            self.metrics['pg_total'].set(total,(pool,))
 
     def get_osd_stats(self):
         osd_stats = self.get('osd_stats')
@@ -616,6 +621,7 @@ class Module(MgrModule):
                     'osd.{}'.format(id_),
                 ))
 
+            osd_dev_node = None
             if obj_store == "filestore":
                 # collect filestore backend device
                 osd_dev_node = osd_metadata.get(
@@ -1072,8 +1078,8 @@ class Module(MgrModule):
                     raise cherrypy.HTTPError(503, 'No MON connection')
 
         # Make the cache timeout for collecting configurable
-        self.collect_timeout = self.get_localized_module_option(
-            'scrape_interval', 5.0)
+        self.collect_timeout = float(self.get_localized_module_option(
+            'scrape_interval', 5.0))
 
         server_addr = self.get_localized_module_option(
             'server_addr', get_default_addr())
@@ -1087,7 +1093,7 @@ class Module(MgrModule):
         # Publish the URI that others may use to access the service we're
         # about to start serving
         self.set_uri('http://{0}:{1}/'.format(
-            socket.getfqdn() if server_addr == '::' else server_addr,
+            socket.getfqdn() if server_addr in ['::', '0.0.0.0'] else server_addr,
             server_port
         ))
 

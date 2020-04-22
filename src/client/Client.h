@@ -454,7 +454,7 @@ public:
 
   // hpc lazyio
   int lazyio(int fd, int enable);
-  int lazyio_propogate(int fd, loff_t offset, size_t count);
+  int lazyio_propagate(int fd, loff_t offset, size_t count);
   int lazyio_synchronize(int fd, loff_t offset, size_t count);
 
   // expose file layout
@@ -651,7 +651,7 @@ public:
   int mark_caps_flushing(Inode *in, ceph_tid_t *ptid);
   void adjust_session_flushing_caps(Inode *in, MetaSession *old_s, MetaSession *new_s);
   void flush_caps_sync();
-  void flush_caps(Inode *in, MetaSession *session, bool sync=false);
+  void kick_flushing_caps(Inode *in, MetaSession *session);
   void kick_flushing_caps(MetaSession *session);
   void early_kick_flushing_caps(MetaSession *session);
   int get_caps(Inode *in, int need, int want, int *have, loff_t endoff);
@@ -670,13 +670,16 @@ public:
   void handle_cap_flushsnap_ack(MetaSession *session, Inode *in, const MConstRef<MClientCaps>& m);
   void handle_cap_grant(MetaSession *session, Inode *in, Cap *cap, const MConstRef<MClientCaps>& m);
   void cap_delay_requeue(Inode *in);
-  void send_cap(Inode *in, MetaSession *session, Cap *cap, bool sync,
+
+  void send_cap(Inode *in, MetaSession *session, Cap *cap, int flags,
 		int used, int want, int retain, int flush,
 		ceph_tid_t flush_tid);
 
+  void send_flush_snap(Inode *in, MetaSession *session, snapid_t follows, CapSnap& capsnap);
+
+  void flush_snaps(Inode *in);
   void get_cap_ref(Inode *in, int cap);
   void put_cap_ref(Inode *in, int cap);
-  void flush_snaps(Inode *in, bool all_again=false);
   void wait_sync_caps(Inode *in, ceph_tid_t want);
   void wait_sync_caps(ceph_tid_t want);
   void queue_cap_snap(Inode *in, SnapContext &old_snapc);
@@ -752,6 +755,7 @@ public:
   std::unique_ptr<PerfCounters> logger;
   std::unique_ptr<MDSMap> mdsmap;
 
+  bool fuse_default_permissions;
 
 protected:
   /* Flags for check_caps() */

@@ -95,14 +95,18 @@ export class PoolListComponent implements OnInit {
       }
     ];
 
-    this.configurationService.get('mon_allow_pool_delete').subscribe((data: any) => {
-      if (_.has(data, 'value')) {
-        const monSection = _.find(data.value, (v) => {
-          return v.section === 'mon';
-        }) || { value: false };
-        this.monAllowPoolDelete = monSection.value === 'true' ? true : false;
-      }
-    });
+    // Note, we need read permissions to get the 'mon_allow_pool_delete'
+    // configuration option.
+    if (this.permissions.configOpt.read) {
+      this.configurationService.get('mon_allow_pool_delete').subscribe((data: any) => {
+        if (_.has(data, 'value')) {
+          const monSection = _.find(data.value, (v) => {
+            return v.section === 'mon';
+          }) || { value: false };
+          this.monAllowPoolDelete = monSection.value === 'true' ? true : false;
+        }
+      });
+    }
   }
 
   ngOnInit() {
@@ -217,6 +221,7 @@ export class PoolListComponent implements OnInit {
     this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       initialState: {
         itemDescription: 'Pool',
+        itemNames: [name],
         submitActionObservable: () =>
           this.taskWrapper.wrapTaskAroundCall({
             task: new FinishedTask(`${BASE_URL}/${URLVerbs.DELETE}`, { pool_name: name }),
@@ -247,6 +252,13 @@ export class PoolListComponent implements OnInit {
       const avail = stats.bytes_used.latest + stats.max_avail.latest;
       pool['usage'] = avail > 0 ? stats.bytes_used.latest / avail : avail;
 
+      if (
+        !pool.cdExecuting &&
+        pool.pg_num + pool.pg_placement_num !== pool.pg_num_target + pool.pg_placement_num_target
+      ) {
+        pool['cdExecuting'] = 'Updating';
+      }
+
       ['rd_bytes', 'wr_bytes'].forEach((stat) => {
         pool.stats[stat].rates = pool.stats[stat].rates.map((point) => point[1]);
       });
@@ -263,10 +275,6 @@ export class PoolListComponent implements OnInit {
     });
 
     return strings.join(', ');
-  }
-
-  getPoolDetails(pool: object) {
-    return _.omit(pool, ['cdExecuting', 'cdIsBinary']);
   }
 
   getSelectionTiers() {

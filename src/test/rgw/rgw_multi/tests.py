@@ -35,6 +35,7 @@ class Config:
         self.checkpoint_delay = kwargs.get('checkpoint_delay', 5)
         # allow some time for realm reconfiguration after changing master zone
         self.reconfigure_delay = kwargs.get('reconfigure_delay', 5)
+        self.tenant = kwargs.get('tenant', '')
 
 # rgw multisite tests, written against the interfaces provided in rgw_multi.
 # these tests must be initialized and run by another module that provides
@@ -50,6 +51,12 @@ def init_multi(_realm, _user, _config=None):
     global config
     config = _config or Config()
     realm_meta_checkpoint(realm)
+
+def get_user():
+    return user.id if user is not None else ''
+
+def get_tenant():
+    return config.tenant if config is not None and config.tenant is not None else ''
 
 def get_realm():
     return realm
@@ -108,6 +115,7 @@ def datalog_autotrim(zone):
 
 def bilog_list(zone, bucket, args = None):
     cmd = ['bilog', 'list', '--bucket', bucket] + (args or [])
+    cmd += ['--tenant', config.tenant, '--uid', user.name] if config.tenant else []
     bilog, _ = zone.cluster.admin(cmd, read_only=True)
     bilog = bilog.decode('utf-8')
     return json.loads(bilog)
@@ -265,6 +273,7 @@ def bucket_sync_status(target_zone, source_zone, bucket_name):
     cmd = ['bucket', 'sync', 'markers'] + target_zone.zone_args()
     cmd += ['--source-zone', source_zone.name]
     cmd += ['--bucket', bucket_name]
+    cmd += ['--tenant', config.tenant, '--uid', user.name] if config.tenant else []
     while True:
         bucket_sync_status_json, retcode = target_zone.cluster.admin(cmd, check_retcode=False, read_only=True)
         if retcode == 0:
@@ -300,6 +309,7 @@ def data_source_log_status(source_zone):
 def bucket_source_log_status(source_zone, bucket_name):
     cmd = ['bilog', 'status'] + source_zone.zone_args()
     cmd += ['--bucket', bucket_name]
+    cmd += ['--tenant', config.tenant, '--uid', user.name] if config.tenant else []
     source_cluster = source_zone.cluster
     bilog_status_json, retcode = source_cluster.admin(cmd, read_only=True)
     bilog_status = json.loads(bilog_status_json.decode('utf-8'))
@@ -720,6 +730,34 @@ def test_versioned_object_incremental_sync():
 
     for _, bucket in zone_bucket:
         zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+def test_concurrent_versioned_object_incremental_sync():
+    zonegroup = realm.master_zonegroup()
+    zonegroup_conns = ZonegroupConns(zonegroup)
+    zone = zonegroup_conns.rw_zones[0]
+
+    # create a versioned bucket
+    bucket = zone.create_bucket(gen_bucket_name())
+    log.debug('created bucket=%s', bucket.name)
+    bucket.configure_versioning(True)
+
+    zonegroup_meta_checkpoint(zonegroup)
+
+    # upload a dummy object and wait for sync. this forces each zone to finish
+    # a full sync and switch to incremental
+    new_key(zone, bucket, 'dummy').set_contents_from_string('')
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+
+    # create several concurrent versions on each zone and let them race to sync
+    obj = 'obj'
+    for i in range(10):
+        for zone_conn in zonegroup_conns.rw_zones:
+            k = new_key(zone_conn, bucket, obj)
+            k.set_contents_from_string('version1')
+            log.debug('zone=%s version=%s', zone_conn.zone.name, k.version_id)
+
+    zonegroup_bucket_checkpoint(zonegroup_conns, bucket.name)
+    zonegroup_data_checkpoint(zonegroup_conns)
 
 def test_version_suspended_incremental_sync():
     zonegroup = realm.master_zonegroup()

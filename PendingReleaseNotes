@@ -1,26 +1,45 @@
->=14.2.2
---------
-
-* Nautilus-based librbd clients can now open images on Jewel clusters.
-
-* The RGW "num_rados_handles" has been removed.
-  If you were using a value of "num_rados_handles" greater than 1
-  multiply your current "objecter_inflight_ops" and
-  "objecter_inflight_op_bytes" paramaeters by the old
-  "num_rados_handles" to get the same throttle behavior.
-
-14.2.2
+14.2.8
 ------
 
-* The no{up,down,in,out} related commands has been revamped.
-  There are now 2 ways to set the no{up,down,in,out} flags:
-  the old 'ceph osd [un]set <flag>' command, which sets cluster-wide flags;
-  and the new 'ceph osd [un]set-group <flags> <who>' command,
-  which sets flags in batch at the granularity of any crush node,
-  or device class.
+* The following OSD memory config options related to bluestore cache autotuning can now
+  be configured during runtime:
 
-* RGW: radosgw-admin introduces two subcommands that allow the
-  managing of expire-stale objects that might be left behind after a
-  bucket reshard in earlier versions of RGW. One subcommand lists such
-  objects and the other deletes them. Read the troubleshooting section
-  of the dynamic resharding docs for details.
+    - osd_memory_base (default: 768 MB)
+    - osd_memory_cache_min (default: 128 MB)
+    - osd_memory_expected_fragmentation (default: 0.15)
+    - osd_memory_target (default: 4 GB)
+
+  The above options can be set with::
+
+    ceph config set global <option> <value>
+
+* The MGR now accepts 'profile rbd' and 'profile rbd-read-only' user caps.
+  These caps can be used to provide users access to MGR-based RBD functionality
+  such as 'rbd perf image iostat' an 'rbd perf image iotop'.
+
+* The configuration value ``osd_calc_pg_upmaps_max_stddev`` used for upmap
+  balancing has been removed. Instead use the mgr balancer config
+  ``upmap_max_deviation`` which now is an integer number of PGs of deviation
+  from the target PGs per OSD.  This can be set with a command like
+  ``ceph config set mgr mgr/balancer/upmap_max_deviation 2``.  The default
+  ``upmap_max_deviation`` is 1.  There are situations where crush rules
+  would not allow a pool to ever have completely balanced PGs.  For example, if
+  crush requires 1 replica on each of 3 racks, but there are fewer OSDs in 1 of
+  the racks.  In those cases, the configuration value can be increased.
+
+* RGW: a mismatch between the bucket notification documentation and the actual
+  message format was fixed. This means that any endpoints receiving bucket 
+  notification, will now receive the same notifications inside an JSON array
+  named 'Records'. Note that this does not affect pulling bucket notification
+  from a subscription in a 'pubsub' zone, as these are already wrapped inside
+  that array.
+
+* Ceph will now issue a health warning if a RADOS pool as a ``pg_num``
+  value that is not a power of two.  This can be fixed by adjusting
+  the pool to a nearby power of two::
+
+    ceph osd pool set <pool-name> pg_num <new-pg-num>
+
+  Alternatively, the warning can be silenced with::
+
+    ceph config set global mon_warn_on_pool_pg_num_not_power_of_two false

@@ -13,6 +13,7 @@ import time
 from mgr_module import MgrModule, CommandResult
 from threading import Event
 from mgr_module import CRUSHMap
+import datetime
 
 TIME_FORMAT = '%Y-%m-%d_%H:%M:%S'
 
@@ -298,12 +299,11 @@ class Module(MgrModule):
         },
         {
             'name': 'upmap_max_deviation',
-            'type': 'float',
-            'default': .01,
-            'min': 0,
-            'max': 1,
+            'type': 'int',
+            'default': 5,
+            'min': 1,
             'desc': 'deviation below which no optimization is attempted',
-            'long_desc': 'If the ratio between the fullest and least-full OSD is below this value then we stop trying to optimize placement.',
+            'long_desc': 'If the number of PGs are within this count then no optimization is attempted',
             'runtime': True,
         },
         {
@@ -403,6 +403,12 @@ class Module(MgrModule):
     run = True
     plans = {}
     mode = ''
+    optimizing = False
+    last_optimize_started = ''
+    last_optimize_duration = ''
+    optimize_result = ''
+    success_string = 'Optimization plan created successfully'
+    in_progress_string = 'in progress'
 
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
@@ -414,6 +420,9 @@ class Module(MgrModule):
             s = {
                 'plans': list(self.plans.keys()),
                 'active': self.active,
+                'last_optimize_started': self.last_optimize_started,
+                'last_optimize_duration': self.last_optimize_duration,
+                'optimize_result': self.optimize_result,
                 'mode': self.get_module_option('mode'),
             }
             return (0, json.dumps(s, indent=4), '')
@@ -515,6 +524,11 @@ class Module(MgrModule):
                                   'current cluster')
             return (0, self.evaluate(ms, pools, verbose=verbose), '')
         elif command['prefix'] == 'balancer optimize':
+            # The GIL can be release by the active balancer, so disallow when active
+            if self.active:
+                return (-errno.EINVAL, '', 'Balancer enabled, disable to optimize manually')
+            if self.optimizing:
+                return (-errno.EINVAL, '', 'Balancer finishing up....try again')
             pools = []
             if 'pools' in command:
                 pools = command['pools']
@@ -527,11 +541,18 @@ class Module(MgrModule):
             if len(invalid_pool_names):
                 return (-errno.EINVAL, '', 'pools %s not found' % invalid_pool_names)
             plan = self.plan_create(command['plan'], osdmap, pools)
+            self.last_optimize_started = time.asctime(time.localtime())
+            self.optimize_result = self.in_progress_string
+            start = time.time()
             r, detail = self.optimize(plan)
-            # remove plan if we are currently unable to find an optimization
-            # or distribution is already perfect
-            if r:
-                self.plan_rm(command['plan'])
+            end = time.time()
+            self.last_optimize_duration = str(datetime.timedelta(seconds=(end - start)))
+            if r == 0:
+                # Add plan if an optimization was created
+                self.optimize_result = self.success_string
+                self.plans[command['plan']] = plan
+            else:
+                self.optimize_result = detail
             return (r, '', detail)
         elif command['prefix'] == 'balancer rm':
             self.plan_rm(command['plan'])
@@ -552,6 +573,11 @@ class Module(MgrModule):
                 return (-errno.ENOENT, '', 'plan %s not found' % command['plan'])
             return (0, plan.show(), '')
         elif command['prefix'] == 'balancer execute':
+            # The GIL can be release by the active balancer, so disallow when active
+            if self.active:
+                return (-errno.EINVAL, '', 'Balancer enabled, disable to execute a plan')
+            if self.optimizing:
+                return (-errno.EINVAL, '', 'Balancer finishing up....try again')
             plan = self.plans.get(command['plan'])
             if not plan:
                 return (-errno.ENOENT, '', 'plan %s not found' % command['plan'])
@@ -621,10 +647,19 @@ class Module(MgrModule):
                     final = [int(p) for p in final]
                     final = [pool_name_by_id[p] for p in final if p in pool_name_by_id]
                 plan = self.plan_create(name, osdmap, final)
+                self.optimizing = True
+                self.last_optimize_started = time.asctime(time.localtime())
+                self.optimize_result = self.in_progress_string
+                start = time.time()
                 r, detail = self.optimize(plan)
+                end = time.time()
+                self.last_optimize_duration = str(datetime.timedelta(seconds=(end - start)))
                 if r == 0:
+                    self.optimize_result = self.success_string
                     self.execute(plan)
-                self.plan_rm(name)
+                else:
+                    self.optimize_result = detail
+                self.optimizing = False
             self.log.debug('Sleeping for %d', sleep_interval)
             self.event.wait(sleep_interval)
             self.event.clear()
@@ -635,7 +670,6 @@ class Module(MgrModule):
                                  self.get("pg_dump"),
                                  'plan %s initial' % name),
                     pools)
-        self.plans[name] = plan
         return plan
 
     def plan_rm(self, name):
@@ -913,7 +947,11 @@ class Module(MgrModule):
             detail = 'No pools available'
             self.log.info(detail)
             return -errno.ENOENT, detail
+        # shuffle pool list so they all get equal (in)attention
+        random.shuffle(pools)
+        self.log.info('pools %s' % pools)
 
+        adjusted_pools = []
         inc = plan.inc
         total_did = 0
         left = max_iterations
@@ -921,7 +959,6 @@ class Module(MgrModule):
         pools_with_pg_merge = [p['pool_name'] for p in osdmap_dump.get('pools', [])
                                if p['pg_num'] > p['pg_num_target']]
         crush_rule_by_pool_name = dict((p['pool_name'], p['crush_rule']) for p in osdmap_dump.get('pools', []))
-        pools_by_crush_rule = {} # group pools by crush_rule
         for pool in pools:
             if pool not in crush_rule_by_pool_name:
                 self.log.info('pool %s does not exist' % pool)
@@ -929,15 +966,11 @@ class Module(MgrModule):
             if pool in pools_with_pg_merge:
                 self.log.info('pool %s has pending PG(s) for merging, skipping for now' % pool)
                 continue
-            crush_rule = crush_rule_by_pool_name[pool]
-            if crush_rule not in pools_by_crush_rule:
-                pools_by_crush_rule[crush_rule] = []
-            pools_by_crush_rule[crush_rule].append(pool)
-        classified_pools = list(pools_by_crush_rule.values())
+            adjusted_pools.append(pool)
         # shuffle so all pools get equal (in)attention
-        random.shuffle(classified_pools)
-        for it in classified_pools:
-            did = ms.osdmap.calc_pg_upmaps(inc, max_deviation, left, it)
+        random.shuffle(adjusted_pools)
+        for pool in adjusted_pools:
+            did = ms.osdmap.calc_pg_upmaps(inc, max_deviation, left, [pool])
             total_did += did
             left -= did
             if left <= 0:
@@ -945,7 +978,7 @@ class Module(MgrModule):
         self.log.info('prepared %d/%d changes' % (total_did, max_iterations))
         if total_did == 0:
             return -errno.EALREADY, 'Unable to find further optimization, ' \
-                                    'or pool(s)\' pg_num is decreasing, ' \
+                                    'or pool(s) pg_num is decreasing, ' \
                                     'or distribution is already perfect'
         return 0, ''
 
@@ -988,7 +1021,7 @@ class Module(MgrModule):
 
         # Make sure roots don't overlap their devices.  If so, we
         # can't proceed.
-        roots = pe.target_by_root.keys()
+        roots = list(pe.target_by_root.keys())
         self.log.debug('roots %s', roots)
         visited = {}
         overlap = {}
@@ -1280,3 +1313,9 @@ class Module(MgrModule):
                 return r, outs
         self.log.debug('done')
         return 0, ''
+
+    def gather_telemetry(self):
+        return {
+            'active': self.active,
+            'mode': self.mode,
+        }
