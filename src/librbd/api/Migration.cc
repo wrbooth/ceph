@@ -19,6 +19,7 @@
 #include "librbd/api/Trash.h"
 #include "librbd/deep_copy/MetadataCopyRequest.h"
 #include "librbd/deep_copy/SnapshotCopyRequest.h"
+#include "librbd/exclusive_lock/Policy.h"
 #include "librbd/image/AttachChildRequest.h"
 #include "librbd/image/AttachParentRequest.h"
 #include "librbd/image/CloneRequest.h"
@@ -1175,7 +1176,8 @@ template <typename I>
 int Migration<I>::v2_relink_src_image() {
   ldout(m_cct, 10) << dendl;
 
-  int r = Trash<I>::restore(m_src_io_ctx, RBD_TRASH_IMAGE_SOURCE_MIGRATION,
+  int r = Trash<I>::restore(m_src_io_ctx,
+                            {cls::rbd::TRASH_IMAGE_SOURCE_MIGRATION},
                             m_src_image_ctx->id, m_src_image_ctx->name);
   if (r < 0) {
     lderr(m_cct) << "failed restoring image from trash: " << cpp_strerror(r)
@@ -1258,7 +1260,8 @@ int Migration<I>::create_dst_image() {
 
   {
     RWLock::RLocker owner_locker(dst_image_ctx->owner_lock);
-    r = dst_image_ctx->operations->prepare_image_update(true);
+    r = dst_image_ctx->operations->prepare_image_update(
+      exclusive_lock::OPERATION_REQUEST_TYPE_GENERAL, true);
     if (r < 0) {
       lderr(m_cct) << "cannot obtain exclusive lock" << dendl;
       return r;

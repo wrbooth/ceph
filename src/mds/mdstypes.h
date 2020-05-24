@@ -534,6 +534,7 @@ struct inode_t {
   inode_t()
   {
     clear_layout();
+    // FIPS zeroization audit 20191117: this memset is not security related.
     memset(&dir_layout, 0, sizeof(dir_layout));
   }
 
@@ -712,8 +713,10 @@ void inode_t<Allocator>::decode(bufferlist::const_iterator &p)
 
   if (struct_v >= 4)
     decode(dir_layout, p);
-  else
+  else {
+    // FIPS zeroization audit 20191117: this memset is not security related.
     memset(&dir_layout, 0, sizeof(dir_layout));
+  }
   decode(layout, p);
   decode(size, p);
   decode(truncate_seq, p);
@@ -1138,6 +1141,7 @@ struct client_metadata_t {
   iterator find(const std::string& key) const { return kv_map.find(key); }
   iterator begin() const { return kv_map.begin(); }
   iterator end() const { return kv_map.end(); }
+  void erase(iterator it) { kv_map.erase(it); }
   std::string& operator[](const std::string& key) { return kv_map[key]; }
   void merge(const client_metadata_t& other) {
     kv_map.insert(other.kv_map.begin(), other.kv_map.end());
@@ -1366,6 +1370,7 @@ struct cap_reconnect_t {
   bufferlist flockbl;
 
   cap_reconnect_t() {
+    // FIPS zeroization audit 20191117: this memset is not security related.
     memset(&capinfo, 0, sizeof(capinfo));
     snap_follows = 0;
   }
@@ -1395,6 +1400,7 @@ struct snaprealm_reconnect_t {
   mutable ceph_mds_snaprealm_reconnect realm;
 
   snaprealm_reconnect_t() {
+    // FIPS zeroization audit 20191117: this memset is not security related.
     memset(&realm, 0, sizeof(realm));
   }
   snaprealm_reconnect_t(inodeno_t ino, snapid_t seq, inodeno_t parent) {
@@ -1414,13 +1420,13 @@ WRITE_CLASS_ENCODER(snaprealm_reconnect_t)
 
 // compat for pre-FLOCK feature
 struct old_ceph_mds_cap_reconnect {
-	__le64 cap_id;
-	__le32 wanted;
-	__le32 issued;
-  __le64 old_size;
+	ceph_le64 cap_id;
+	ceph_le32 wanted;
+	ceph_le32 issued;
+  ceph_le64 old_size;
   struct ceph_timespec old_mtime, old_atime;
-	__le64 snaprealm;
-	__le64 pathbase;        /* base ino for our path to this ino */
+	ceph_le64 snaprealm;
+	ceph_le64 pathbase;        /* base ino for our path to this ino */
 } __attribute__ ((packed));
 WRITE_RAW_ENCODER(old_ceph_mds_cap_reconnect)
 

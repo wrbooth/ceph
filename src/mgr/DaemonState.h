@@ -180,6 +180,10 @@ class DaemonState
 	}
       }
     }
+    p = m.find("hostname");
+    if (p != m.end()) {
+      hostname = p->second;
+    }
   }
 
   const std::map<std::string,std::string>& _get_config_defaults() {
@@ -389,6 +393,7 @@ public:
    */
   void cull(const std::string& svc_name,
 	    const std::set<std::string>& names_exist);
+  void cull_services(const std::set<std::string>& types_exist);
 };
 
 #endif

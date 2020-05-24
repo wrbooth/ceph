@@ -6551,6 +6551,8 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  if (op.extent.offset > oi.size) {
 	    t->truncate(
 	      soid, op.extent.offset);
+            truncate_update_size_and_usage(ctx->delta_stats, oi,
+                                           op.extent.offset);
 	  } else {
 	    t->nop(soid);
 	  }
@@ -6982,6 +6984,7 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 	  map<string,bufferlist> rmattrs;
 	  result = getattrs_maybe_cache(ctx->obc, &rmattrs);
 	  if (result < 0) {
+	    dout(10) << __func__ << " error: " << cpp_strerror(result) << dendl;
 	    return result;
 	  }
 	  map<string, bufferlist>::iterator iter;
@@ -7797,6 +7800,9 @@ int PrimaryLogPG::do_osd_ops(OpContext *ctx, vector<OSDOp>& ops)
 
     if (result < 0)
       break;
+  }
+  if (result < 0) {
+    dout(10) << __func__ << " error: " << cpp_strerror(result) << dendl;
   }
   return result;
 }
@@ -11590,7 +11596,7 @@ void PrimaryLogPG::remove_missing_object(const hobject_t &soid,
   ceph_assert(r == 0);
 }
 
-void PrimaryLogPG::finish_degraded_object(const hobject_t& oid)
+void PrimaryLogPG::finish_degraded_object(const hobject_t oid)
 {
   dout(10) << __func__ << " " << oid << dendl;
   if (callbacks_for_degraded_object.count(oid)) {
@@ -11684,7 +11690,10 @@ void PrimaryLogPG::recover_got(hobject_t oid, eversion_t v)
 {
   dout(10) << "got missing " << oid << " v " << v << dendl;
   pg_log.recover_got(oid, v, info);
-  if (pg_log.get_log().complete_to != pg_log.get_log().log.end()) {
+  if (pg_log.get_log().log.empty()) {
+    dout(10) << "last_complete now " << info.last_complete
+             << " while log is empty" << dendl;
+  } else if (pg_log.get_log().complete_to != pg_log.get_log().log.end()) {
     dout(10) << "last_complete now " << info.last_complete
 	     << " log.complete_to " << pg_log.get_log().complete_to->version
 	     << dendl;
@@ -13514,16 +13523,22 @@ void PrimaryLogPG::scan_range(
     if (is_primary())
       obc = object_contexts.lookup(*p);
     if (obc) {
+      if (!obc->obs.exists) {
+	/* If the object does not exist here, it must have been removed
+	 * between the collection_list_partial and here.  This can happen
+	 * for the first item in the range, which is usually last_backfill.
+	 */
+	continue;
+      }
       bi->objects[*p] = obc->obs.oi.version;
       dout(20) << "  " << *p << " " << obc->obs.oi.version << dendl;
     } else {
       bufferlist bl;
       int r = pgbackend->objects_get_attr(*p, OI_ATTR, &bl);
-
       /* If the object does not exist here, it must have been removed
-	 * between the collection_list_partial and here.  This can happen
-	 * for the first item in the range, which is usually last_backfill.
-	 */
+       * between the collection_list_partial and here.  This can happen
+       * for the first item in the range, which is usually last_backfill.
+       */
       if (r == -ENOENT)
 	continue;
 
@@ -15257,6 +15272,7 @@ int PrimaryLogPG::rep_repair_primary_object(const hobject_t& soid, OpContext *ct
     eio_errors_to_process = true;
     ceph_assert(is_clean());
     state_set(PG_STATE_REPAIR);
+    state_clear(PG_STATE_CLEAN);
     queue_peering_event(
         PGPeeringEventRef(
 	  std::make_shared<PGPeeringEvent>(

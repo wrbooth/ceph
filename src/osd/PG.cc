@@ -814,6 +814,11 @@ void PG::discover_all_missing(map<int, map<spg_t,pg_query_t> > &query_map)
       continue;
     }
 
+    if (peer_purged.count(peer)) {
+      dout(20) << __func__ << " skipping purged osd." << peer << dendl;
+      continue;
+    }
+
     map<pg_shard_t, pg_info_t>::const_iterator iter = peer_info.find(peer);
     if (iter != peer_info.end() &&
         (iter->second.is_empty() || iter->second.dne())) {
@@ -912,11 +917,15 @@ bool PG::needs_backfill() const
 
 void PG::check_past_interval_bounds() const
 {
+  auto oldest_epoch = osd->get_superblock().oldest_map;
   auto rpib = get_required_past_interval_bounds(
     info,
-    osd->get_superblock().oldest_map);
+    oldest_epoch);
   if (rpib.first >= rpib.second) {
-    if (!past_intervals.empty()) {
+    // do not warn if the start bound is dictated by oldest_map; the
+    // past intervals are presumably appropriate given the pg info.
+    if (!past_intervals.empty() &&
+        rpib.first > oldest_epoch) {
       osd->clog->error() << info.pgid << " required past_interval bounds are"
 			 << " empty [" << rpib << ") but past_intervals is not: "
 			 << past_intervals;
@@ -1118,7 +1127,7 @@ void PG::clear_primary_state()
 }
 
 PG::Scrubber::Scrubber()
- : reserved(false), reserve_failed(false),
+ : local_reserved(false), remote_reserved(false), reserve_failed(false),
    epoch_start(0),
    active(false),
    shallow_errors(0), deep_errors(0), fixed(0),
@@ -1418,9 +1427,6 @@ void PG::calc_replicated_acting(
       want->push_back(i);
       acting_backfill->insert(up_cand);
       ss << " osd." << i << " (up) accepted " << cur_info << std::endl;
-    }
-    if (want->size() >= size) {
-      break;
     }
   }
 
@@ -1786,6 +1792,14 @@ bool PG::choose_acting(pg_shard_t &auth_log_shard_id,
     } else {
       choose_async_recovery_replicated(all_info, auth_log_shard->second, &want, &want_async_recovery, get_osdmap());
     }
+  }
+  while (want.size() > pool.info.size) {
+    // async recovery should have taken out as many osds as it can.
+    // if not, then always evict the last peer
+    // (will get synchronously recovered later)
+    dout(10) << __func__ << " evicting osd." << want.back()
+               << " from oversized want " << want << dendl;
+    want.pop_back();
   }
   if (want != acting) {
     dout(10) << __func__ << " want " << want << " != acting " << acting
@@ -2877,7 +2891,7 @@ void PG::merge_from(map<spg_t,PGRef>& sources, RecoveryCtx *rctx,
 
   // make sure we have a meaningful last_epoch_started/clean (if we were a
   // placeholder)
-  if (info.last_epoch_started == 0) {
+  if (info.history.epoch_created == 0) {
     // start with (a) source's history, since these PGs *should* have been
     // remapped in concert with each other...
     info.history = sources.begin()->second->info.history;
@@ -3261,6 +3275,16 @@ void PG::_update_calc_stats()
   info.stats.stats.sum.num_objects_misplaced = 0;
   info.stats.avail_no_missing.clear();
   info.stats.object_location_counts.clear();
+
+  // We should never hit this condition, but if end up hitting it,
+  // make sure to update num_objects and set PG_STATE_INCONSISTENT.
+  if (info.stats.stats.sum.num_objects < 0) {
+    dout(0) << __func__ << " negative num_objects = "
+            << info.stats.stats.sum.num_objects << " setting it to 0 "
+            << dendl;
+    info.stats.stats.sum.num_objects = 0;
+    state_set(PG_STATE_INCONSISTENT);
+  }
 
   if ((is_remapped() || is_undersized() || !is_clean()) && (is_peered() || is_activating())) {
     dout(20) << __func__ << " actingset " << actingset << " upset "
@@ -4143,6 +4167,9 @@ void PG::read_state(ObjectStore *store)
       set_role(-1);
   }
 
+  // init pool options
+  store->set_collection_opts(ch, pool.info.opts);
+
   PG::RecoveryCtx rctx(0, 0, 0, new ObjectStore::Transaction);
   handle_initialize(&rctx);
   // note: we don't activate here because we know the OSD will advance maps
@@ -4337,22 +4364,24 @@ void PG::requeue_map_waiters()
 /*
  * when holding pg and sched_scrub_lock, then the states are:
  *   scheduling:
- *     scrubber.reserved = true
- *     scrub_rserved_peers includes whoami
- *     osd->scrub_pending++
+ *     scrubber.local_reserved = true
+ *     scrubber.active = false
+ *     scrubber.reserved_peers includes whoami
+ *     osd->scrubs_local++
  *   scheduling, replica declined:
- *     scrubber.reserved = true
+ *     scrubber.local_reserved = true
  *     scrubber.reserved_peers includes -1
- *     osd->scrub_pending++
+ *     osd->scrub_local++
  *   pending:
- *     scrubber.reserved = true
+ *     scrubber.local_reserved = true
+ *     scrubber.active = false
  *     scrubber.reserved_peers.size() == acting.size();
  *     pg on scrub_wq
- *     osd->scrub_pending++
+ *     osd->scrub_local++
  *   scrubbing:
- *     scrubber.reserved = false;
+ *     scrubber.local_reserved = true;
+ *     scrubber.active = true
  *     scrubber.reserved_peers empty
- *     osd->scrubber.active++
  */
 
 // returns true if a scrub has been newly kicked off
@@ -4366,7 +4395,7 @@ bool PG::sched_scrub()
 
   // All processing the first time through commits us to whatever
   // choices are made.
-  if (!scrubber.reserved) {
+  if (!scrubber.local_reserved) {
     dout(20) << __func__ << ": Start processing pg " << info.pgid << dendl;
 
     bool allow_deep_scrub = !(get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB) ||
@@ -4452,10 +4481,13 @@ bool PG::sched_scrub()
     scrubber.need_auto = false;
 
     ceph_assert(scrubber.reserved_peers.empty());
-    if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
-         osd->inc_scrubs_pending()) {
+    bool allow_scrubing = cct->_conf->osd_scrub_during_recovery ||
+                          (cct->_conf->osd_repair_during_recovery && scrubber.must_repair) ||
+                          !osd->is_recovery_active();
+    if (allow_scrubing &&
+         osd->inc_scrubs_local()) {
       dout(20) << __func__ << ": reserved locally, reserving replicas" << dendl;
-      scrubber.reserved = true;
+      scrubber.local_reserved = true;
       scrubber.reserved_peers.insert(pg_whoami);
       scrub_reserve_replicas();
     } else {
@@ -4464,7 +4496,7 @@ bool PG::sched_scrub()
     }
   }
 
-  if (scrubber.reserved) {
+  if (scrubber.local_reserved) {
     if (scrubber.reserve_failed) {
       dout(20) << __func__ << ": failed, a peer declined" << dendl;
       clear_scrub_reserved();
@@ -4617,24 +4649,24 @@ void PG::handle_scrub_reserve_request(OpRequestRef op)
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
-  if (scrubber.reserved) {
+  if (scrubber.local_reserved) {
     dout(10) << __func__ << " ignoring reserve request: Already reserved"
 	     << dendl;
     return;
   }
   if ((cct->_conf->osd_scrub_during_recovery || !osd->is_recovery_active()) &&
-      osd->inc_scrubs_pending()) {
-    scrubber.reserved = true;
+      osd->inc_scrubs_remote()) {
+    scrubber.remote_reserved = true;
   } else {
     dout(20) << __func__ << ": failed to reserve remotely" << dendl;
-    scrubber.reserved = false;
+    scrubber.remote_reserved = false;
   }
   const MOSDScrubReserve *m =
     static_cast<const MOSDScrubReserve*>(op->get_req());
   Message *reply = new MOSDScrubReserve(
     spg_t(info.pgid.pgid, primary.shard),
     m->map_epoch,
-    scrubber.reserved ? MOSDScrubReserve::GRANT : MOSDScrubReserve::REJECT,
+    scrubber.remote_reserved ? MOSDScrubReserve::GRANT : MOSDScrubReserve::REJECT,
     pg_whoami);
   osd->send_message_osd_cluster(reply, op->get_req()->get_connection());
 }
@@ -4643,7 +4675,7 @@ void PG::handle_scrub_reserve_grant(OpRequestRef op, pg_shard_t from)
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
-  if (!scrubber.reserved) {
+  if (!scrubber.local_reserved) {
     dout(10) << "ignoring obsolete scrub reserve reply" << dendl;
     return;
   }
@@ -4660,7 +4692,7 @@ void PG::handle_scrub_reserve_reject(OpRequestRef op, pg_shard_t from)
 {
   dout(7) << __func__ << " " << *op->get_req() << dendl;
   op->mark_started();
-  if (!scrubber.reserved) {
+  if (!scrubber.local_reserved) {
     dout(10) << "ignoring obsolete scrub reserve reply" << dendl;
     return;
   }
@@ -4703,7 +4735,7 @@ void PG::reject_reservation()
   osd->send_message_osd_cluster(
     primary.osd,
     new MBackfillReserve(
-      MBackfillReserve::REJECT,
+      MBackfillReserve::REJECT_TOOFULL,
       spg_t(info.pgid.pgid, primary.shard),
       get_osdmap_epoch()),
     get_osdmap_epoch());
@@ -4734,9 +4766,13 @@ void PG::clear_scrub_reserved()
   scrubber.reserved_peers.clear();
   scrubber.reserve_failed = false;
 
-  if (scrubber.reserved) {
-    scrubber.reserved = false;
-    osd->dec_scrubs_pending();
+  if (scrubber.local_reserved) {
+    scrubber.local_reserved = false;
+    osd->dec_scrubs_local();
+  }
+  if (scrubber.remote_reserved) {
+    scrubber.remote_reserved = false;
+    osd->dec_scrubs_remote();
   }
 }
 
@@ -5310,12 +5346,6 @@ void PG::chunky_scrub(ThreadPool::TPHandle &handle)
         scrubber.epoch_start = info.history.same_interval_since;
         scrubber.active = true;
 
-	osd->inc_scrubs_active(scrubber.reserved);
-	if (scrubber.reserved) {
-	  scrubber.reserved = false;
-	  scrubber.reserved_peers.clear();
-	}
-
 	{
 	  ObjectStore::Transaction t;
 	  scrubber.cleanup_store(&t);
@@ -5675,9 +5705,12 @@ void PG::scrub_clear_state(bool has_error)
   state_clear(PG_STATE_DEEP_SCRUB);
   publish_stats_to_osd();
 
-  // active -> nothing.
-  if (scrubber.active)
-    osd->dec_scrubs_active();
+  // local -> nothing.
+  if (scrubber.local_reserved) {
+    osd->dec_scrubs_local();
+    scrubber.local_reserved = false;
+    scrubber.reserved_peers.clear();
+  }
 
   requeue_ops(waiting_for_scrub);
 
@@ -6982,12 +7015,17 @@ void PG::handle_query_state(Formatter *f)
   recovery_state.handle_event(q, 0);
 }
 
-void PG::update_store_with_options()
+void PG::init_collection_pool_opts()
 {
   auto r = osd->store->set_collection_opts(ch, pool.info.opts);
-  if(r < 0 && r != -EOPNOTSUPP) {
+  if (r < 0 && r != -EOPNOTSUPP) {
     derr << __func__ << " set_collection_opts returns error:" << r << dendl;
   }
+}
+
+void PG::update_store_with_options()
+{
+  init_collection_pool_opts();
 }
 
 struct C_DeleteMore : public Context {
@@ -7762,15 +7800,16 @@ void PG::RecoveryState::WaitRemoteBackfillReserved::retry()
   }
 
   pg->state_clear(PG_STATE_BACKFILL_WAIT);
-  pg->state_set(PG_STATE_BACKFILL_TOOFULL);
   pg->publish_stats_to_osd();
 
   pg->schedule_backfill_retry(pg->cct->_conf->osd_backfill_retry_interval);
 }
 
 boost::statechart::result
-PG::RecoveryState::WaitRemoteBackfillReserved::react(const RemoteReservationRejected &evt)
+PG::RecoveryState::WaitRemoteBackfillReserved::react(const RemoteReservationRejectedTooFull &evt)
 {
+  PG *pg = context< RecoveryMachine >().pg;
+  pg->state_set(PG_STATE_BACKFILL_TOOFULL);
   retry();
   return transit<NotBackfilling>();
 }
@@ -7828,7 +7867,7 @@ PG::RecoveryState::NotBackfilling::react(const RemoteBackfillReserved &evt)
 }
 
 boost::statechart::result
-PG::RecoveryState::NotBackfilling::react(const RemoteReservationRejected &evt)
+PG::RecoveryState::NotBackfilling::react(const RemoteReservationRejectedTooFull &evt)
 {
   return discard_event();
 }
@@ -7870,11 +7909,11 @@ PG::RecoveryState::RepNotRecovering::RepNotRecovering(my_context ctx)
 }
 
 boost::statechart::result
-PG::RecoveryState::RepNotRecovering::react(const RejectRemoteReservation &evt)
+PG::RecoveryState::RepNotRecovering::react(const RejectTooFullRemoteReservation &evt)
 {
   PG *pg = context< RecoveryMachine >().pg;
   pg->reject_reservation();
-  post_event(RemoteReservationRejected());
+  post_event(RemoteReservationRejectedTooFull());
   return discard_event();
 }
 
@@ -7978,12 +8017,12 @@ PG::RecoveryState::RepNotRecovering::react(const RequestBackfillPrio &evt)
       (rand()%1000 < (pg->cct->_conf->osd_debug_reject_backfill_probability*1000.0))) {
     ldout(pg->cct, 10) << "backfill reservation rejected: failure injection"
 		       << dendl;
-    post_event(RejectRemoteReservation());
+    post_event(RejectTooFullRemoteReservation());
   } else if (!pg->cct->_conf->osd_debug_skip_full_check_in_backfill_reservation &&
       pg->osd->tentative_backfill_full(pg, pending_adjustment, cur_stat)) {
     ldout(pg->cct, 10) << "backfill reservation rejected: backfill full"
 		       << dendl;
-    post_event(RejectRemoteReservation());
+    post_event(RejectTooFullRemoteReservation());
   } else {
     Context *preempt = nullptr;
     // Don't reserve space if skipped reservation check, this is used
@@ -8065,17 +8104,17 @@ PG::RecoveryState::RepWaitBackfillReserved::react(const RemoteBackfillReserved &
 
 boost::statechart::result
 PG::RecoveryState::RepWaitBackfillReserved::react(
-  const RejectRemoteReservation &evt)
+  const RejectTooFullRemoteReservation &evt)
 {
   PG *pg = context< RecoveryMachine >().pg;
   pg->reject_reservation();
-  post_event(RemoteReservationRejected());
+  post_event(RemoteReservationRejectedTooFull());
   return discard_event();
 }
 
 boost::statechart::result
 PG::RecoveryState::RepWaitBackfillReserved::react(
-  const RemoteReservationRejected &evt)
+  const RemoteReservationRejectedTooFull &evt)
 {
   PG *pg = context< RecoveryMachine >().pg;
   pg->clear_reserved_num_bytes();
@@ -8124,7 +8163,7 @@ PG::RecoveryState::RepRecovering::react(const BackfillTooFull &)
   pg->osd->send_message_osd_cluster(
     pg->primary.osd,
     new MBackfillReserve(
-      MBackfillReserve::TOOFULL,
+      MBackfillReserve::REVOKE_TOOFULL,
       spg_t(pg->info.pgid.pgid, pg->primary.shard),
       pg->get_osdmap_epoch()),
     pg->get_osdmap_epoch());

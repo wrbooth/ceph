@@ -9,7 +9,7 @@ import threading
 import uuid
 from six import itervalues, iteritems
 from collections import defaultdict
-from prettytable import PrettyTable
+from prettytable import PrettyTable, PLAIN_COLUMNS
 
 from mgr_module import MgrModule
 
@@ -25,7 +25,7 @@ Some terminology is made up for the purposes of this module:
 
 INTERVAL = 5
 
-PG_NUM_MIN = 4  # unless specified on a per-pool basis
+PG_NUM_MIN = 32  # unless specified on a per-pool basis
 
 def nearest_power_of_two(n):
     v = int(n)
@@ -115,6 +115,8 @@ class PgAutoscaler(MgrModule):
 #                                 'IDEAL',
                                  'NEW PG_NUM', 'AUTOSCALE'],
                                 border=False)
+            table.left_padding_width = 0
+            table.right_padding_width = 1
             table.align['POOL'] = 'l'
             table.align['SIZE'] = 'r'
             table.align['TARGET SIZE'] = 'r'
@@ -161,6 +163,10 @@ class PgAutoscaler(MgrModule):
         while not self._shutdown.is_set():
             self._maybe_adjust()
             self._shutdown.wait(timeout=int(self.sleep_interval))
+
+    def shutdown(self):
+        self.log.info('Stopping pg_autoscaler')
+        self._shutdown.set()
 
     def get_subtree_resource_status(self, osdmap, crush):
         """
@@ -254,6 +260,9 @@ class PgAutoscaler(MgrModule):
         # iterate over all pools to determine how they should be sized
         for pool_name, p in iteritems(pools):
             pool_id = p['pool']
+            if pool_id not in pool_stats:
+                # race with pool deletion; skip
+                continue
 
             # FIXME: we assume there is only one take per pool, but that
             # may not be true.
@@ -268,7 +277,7 @@ class PgAutoscaler(MgrModule):
 
             raw_used_rate = osdmap.pool_raw_used_rate(pool_id)
 
-            pool_logical_used = pool_stats[pool_id]['bytes_used']
+            pool_logical_used = pool_stats[pool_id]['stored']
             bias = p['options'].get('pg_autoscale_bias', 1.0)
             target_bytes = p['options'].get('target_size_bytes', 0)
 
@@ -283,7 +292,7 @@ class PgAutoscaler(MgrModule):
             final_ratio = max(capacity_ratio, target_ratio)
 
             # So what proportion of pg allowance should we be using?
-            pool_pg_target = (final_ratio * root_map[root_id].pg_target) / raw_used_rate * bias
+            pool_pg_target = (final_ratio * root_map[root_id].pg_target) / p['size'] * bias
 
             final_pg_target = max(p['options'].get('pg_num_min', PG_NUM_MIN),
                                   nearest_power_of_two(pool_pg_target))
@@ -413,7 +422,7 @@ class PgAutoscaler(MgrModule):
         too_much_target_ratio = []
         for root_id, total in iteritems(total_ratio):
             total_target = total_target_ratio[root_id]
-            if total > 1.0:
+            if total_target > 0 and total > 1.0:
                 too_much_target_ratio.append(
                     'Pools %s overcommit available storage by %.03fx due to '
                     'target_size_ratio %.03f on pools %s' % (
@@ -440,7 +449,7 @@ class PgAutoscaler(MgrModule):
         too_much_target_bytes = []
         for root_id, total in iteritems(total_bytes):
             total_target = total_target_bytes[root_id]
-            if total > root_map[root_id].capacity:
+            if total_target > 0 and total > root_map[root_id].capacity:
                 too_much_target_bytes.append(
                     'Pools %s overcommit available storage by %.03fx due to '
                     'target_size_bytes %s on pools %s' % (

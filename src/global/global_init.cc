@@ -226,21 +226,30 @@ global_init(const std::map<std::string,std::string> *defaults,
     gid_t gid = 0;
     std::string uid_string;
     std::string gid_string;
+    std::string home_directory;
     if (g_conf()->setuser.length()) {
+      char buf[4096];
+      struct passwd pa;
+      struct passwd *p = 0;
+
       uid = atoi(g_conf()->setuser.c_str());
-      if (!uid) {
-	char buf[4096];
-	struct passwd pa;
-	struct passwd *p = 0;
+      if (uid) {
+        getpwuid_r(uid, &pa, buf, sizeof(buf), &p);
+      } else {
 	getpwnam_r(g_conf()->setuser.c_str(), &pa, buf, sizeof(buf), &p);
-	if (!p) {
+        if (!p) {
 	  cerr << "unable to look up user '" << g_conf()->setuser << "'"
 	       << std::endl;
 	  exit(1);
-	}
-	uid = p->pw_uid;
-	gid = p->pw_gid;
-	uid_string = g_conf()->setuser;
+        }
+
+        uid = p->pw_uid;
+        gid = p->pw_gid;
+        uid_string = g_conf()->setuser;
+      }
+
+      if (p && p->pw_dir != nullptr) {
+        home_directory = std::string(p->pw_dir);
       }
     }
     if (g_conf()->setgroup.length() > 0) {
@@ -301,6 +310,10 @@ global_init(const std::map<std::string,std::string> *defaults,
 	     << std::endl;
 	exit(1);
       }
+      if (setenv("HOME", home_directory.c_str(), 1) != 0) {
+	cerr << "warning: unable to set HOME to " << home_directory << ": "
+             << cpp_strerror(errno) << std::endl;
+      }
       priv_ss << "set uid:gid to " << uid << ":" << gid << " (" << uid_string << ":" << gid_string << ")";
     } else {
       priv_ss << "deferred set uid:gid to " << uid << ":" << gid << " (" << uid_string << ":" << gid_string << ")";
@@ -311,6 +324,11 @@ global_init(const std::map<std::string,std::string> *defaults,
   if (prctl(PR_SET_DUMPABLE, 1) == -1) {
     cerr << "warning: unable to set dumpable flag: " << cpp_strerror(errno) << std::endl;
   }
+#  if defined(PR_SET_THP_DISABLE)
+  if (!g_conf().get_val<bool>("thp") && prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == -1) {
+    cerr << "warning: unable to disable THP: " << cpp_strerror(errno) << std::endl;
+  }
+#  endif
 #endif
 
   // Expand metavariables. Invoke configuration observers. Open log file.

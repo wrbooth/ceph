@@ -113,6 +113,7 @@ struct CapSnap {
 #define I_DIR_ORDERED	2
 #define I_CAP_DROPPED	4
 #define I_SNAPDIR_OPEN	8
+#define I_KICK_FLUSH	16
 
 struct Inode {
   Client *client;
@@ -191,7 +192,6 @@ struct Inode {
   // about the dir (if this is one!)
   Dir       *dir;     // if i'm a dir.
   fragtree_t dirfragtree;
-  set<int>  dir_contacts;
   uint64_t dir_release_count, dir_ordered_count;
   bool dir_hashed, dir_replicated;
 
